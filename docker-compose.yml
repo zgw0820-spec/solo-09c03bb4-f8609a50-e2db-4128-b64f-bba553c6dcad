@@ -1,0 +1,87 @@
+# Local demo stack.
+#
+# All three services share the host network namespace on purpose: multicast is
+# not forwarded across the default Docker bridge, and the simulator needs the
+# 127.0.0.11/12/13 loopback aliases to emulate several up-link source IPs.
+# This is a Linux demo topology; on a real network up-link and classroom
+# interfaces are separate, and only the relay needs multicast access.
+#
+#   docker compose up --build
+#   open http://127.0.0.1:8000/docs
+#   docker compose logs -f classroom
+
+services:
+  uplink:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    network_mode: host
+    command:
+      - uvicorn
+      - simulator.main:app
+      - --host
+      - 127.0.0.1
+      - --port
+      - "9100"
+    environment:
+      SIM_GROUP: "239.255.42.10"
+      SIM_PORT: "5004"
+      SIM_INTERFACE: "127.0.0.1"
+      SIM_SOURCES: "127.0.0.11,127.0.0.12,127.0.0.13"
+      SIM_INTERVAL: "0.2"
+      SIM_INITIAL_MODE: "allow"
+      SIM_INITIAL_SOURCES: "127.0.0.11"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9100/healthz', timeout=2)"
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  relay:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    network_mode: host
+    command:
+      - uvicorn
+      - app.main:app
+      - --host
+      - 127.0.0.1
+      - --port
+      - "8000"
+    environment:
+      RELAY_UPLINK_GROUP: "239.255.42.10"
+      RELAY_UPLINK_PORT: "5004"
+      RELAY_UPLINK_INTERFACE: "127.0.0.1"
+      RELAY_MULTICAST_GROUP: "239.255.42.10"
+      RELAY_MULTICAST_INTERFACE: "127.0.0.1"
+      RELAY_CLASSROOM_PORT_MIN: "16000"
+      RELAY_CLASSROOM_PORT_MAX: "16999"
+      RELAY_UPLINK_URL: "http://127.0.0.1:9100"
+      RELAY_UPLINK_REQUIRED: "true"
+      RELAY_INITIAL_TABLE: "16001=127.0.0.11;16002=127.0.0.11;16003=127.0.0.11"
+    depends_on:
+      uplink:
+        condition: service_healthy
+
+  classroom:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    network_mode: host
+    command:
+      - python
+      - -m
+      - scripts.classroom_watcher
+    environment:
+      CLASSROOM_GROUP: "239.255.42.10"
+      CLASSROOM_INTERFACE: "127.0.0.1"
+      CLASSROOM_PORTS: "16001,16002,16003"
+      CLASSROOM_SUMMARY_INTERVAL: "2"
+    depends_on:
+      relay:
+        condition: service_started
